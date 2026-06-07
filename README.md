@@ -1,0 +1,2 @@
+# real-time-vehicle-telemetry-pipeline
+Real-time vehicle telemetry pipeline: Kafka ingestion → Airflow orchestration → Parquet/DuckDB storage → LangGraph + Ollama AI anomaly analysis → Elasticsearch/Kibana visualization. Full MLOps stack with OpenTelemetry tracing, containerized via Docker Compose.
