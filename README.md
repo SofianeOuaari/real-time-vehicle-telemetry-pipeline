@@ -24,7 +24,7 @@ The pipeline simulates a real-world automotive telemetry stack end-to-end:
          Generator -> Kafka (raw) -> Preprocessor -> Kafka (enriched)
                                                           |
                                           ┌───────────────┘
-                                          |               
+                                          |
                               ┌───────────┴───────────┐
                               v                       v
                         Parquet Writer           ES Writer
@@ -36,6 +36,38 @@ The pipeline simulates a real-world automotive telemetry stack end-to-end:
                         LangGraph AI               Kibana
                         (llama3.2)             Dashboards
 ```
+
+## Screenshots
+
+### Telemetry pipeline DAG
+
+Generator and preprocessor run in parallel (both `DockerOperator`), then fan-in to trigger the parquet writer once both succeed.
+
+![Telemetry pipeline DAG graph](attachments/parquet_writer_dag_sequence.png)
+
+### Analysis pipeline DAG
+
+`check_parquet_availability` is a `BranchPythonOperator` — if no data is ready it routes to `skip_analysis`, otherwise it loads DuckDB and runs the LangGraph agent as a `DockerOperator`.
+
+![Analysis pipeline DAG graph](attachments/run_langgraph_dag_sequence.png)
+
+### LangGraph agent output in Airflow logs
+
+The agent produces a structured fleet health report. In this run it flagged 288 overheating events across the fleet with severity `high`, and reported an average engine temperature of 79.6°C.
+
+![LangGraph agent task logs](attachments/airflow_dag_run_langraph_logs.png)
+
+### Kibana — exploring indexed telemetry
+
+Enriched messages land in daily indices (`telemetry-YYYY.MM.DD`) with 33 mapped fields. The Discover view shows 24,000 documents indexed over a 15-minute window.
+
+Field stats for `battery_issue` show the anomaly injection rate working as expected — 97.4% normal, 2.6% flagged:
+
+![Kibana battery_issue field stats](attachments/kibana_batterie_issue_feature.png)
+
+`oil_pressure_bar` distribution across the same sample:
+
+![Kibana oil_pressure_bar field stats](attachments/kibana_oil_pressure_bar.png)
 
 ## Prerequisites
 
@@ -118,19 +150,21 @@ Consumes from `car-telemetry-enriched` and writes to Hive-partitioned Parquet fi
 
 ### Elasticsearch Writer (`services/elasticsearch_writer/`)
 
-Consumes from `car-telemetry-enriched` and bulk-indexes into daily Elasticsearch indices (`telemetry-YYYY.MM.DD`). Flattens nested fields and maps `location` as a `geo_point` for Kibana Maps.
+Consumes from `car-telemetry-enriched` and bulk-indexes into daily Elasticsearch indices (`telemetry-YYYY.MM.DD`). Flattens nested fields and maps `location` as a `geo_point` for Kibana Maps. 33 fields are mapped including all sensor readings, anomaly flags, and derived metrics.
 
 ### LangGraph Agent (`services/langgraph_agent/`)
 
-Reads from DuckDB (loaded from Parquet) and runs a multi-agent LangGraph pipeline using llama3.2 via Ollama. Outputs structured JSON reports to `data/analysis_results/`.
+Reads from DuckDB (loaded from Parquet) and runs a multi-agent LangGraph pipeline using llama3.2 via Ollama. Produces structured JSON reports with fleet-level health assessments, per-vehicle anomaly alerts, and trend analysis. Reports are saved to `data/analysis_results/`.
 
 ## Airflow DAGs
 
 **`telemetry_pipeline`** — runs every 5 minutes
-- Starts generator (240s), preprocessor (270s), and parquet writer (300s) as Docker containers
+
+`start_generator` and `start_preprocessor` run in parallel as `DockerOperator` tasks, both fanning into `start_parquet_writer` which starts only after both succeed.
 
 **`analysis_pipeline`** — runs every 15 minutes
-- Checks Parquet availability → loads into DuckDB → runs LangGraph agent → archives results
+
+`check_parquet_availability` (`BranchPythonOperator`) decides the path: if no data is ready it skips to `skip_analysis` (a no-op `BashOperator`), otherwise it runs `prepare_duckdb` (`PythonOperator`) then `run_langgraph_agent` (`DockerOperator`).
 
 ## Data schema
 
