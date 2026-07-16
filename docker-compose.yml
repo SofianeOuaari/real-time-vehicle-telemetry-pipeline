@@ -106,6 +106,69 @@ services:
       - telemetry_network
 
 
+  # ==================== Elasticsearch & Kibana ====================
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - telemetry_network
+    healthcheck:
+      test: curl -fs http://localhost:9200/_cluster/health || exit 1
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.0
+    container_name: kibana
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - telemetry_network
+    healthcheck:
+      test: curl -fs http://localhost:5601/api/status || exit 1
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  elasticsearch-writer:
+    build:
+      context: ./services/elasticsearch_writer
+      dockerfile: Dockerfile
+    image: elasticsearch-writer:latest
+    container_name: elasticsearch-writer
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: car-telemetry-enriched
+      ELASTICSEARCH_HOST: http://elasticsearch:9200
+      ES_INDEX_PREFIX: telemetry
+      ES_BUFFER_SIZE: "100"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - telemetry_network
 
   # ==================== Ollama LLM Service ====================
 
@@ -158,3 +221,4 @@ volumes:
   kafka_data:
   postgres_airflow_data:
   ollama_data:
+  elasticsearch_data:
